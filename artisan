@@ -9,6 +9,66 @@ define('LARAVEL_START', microtime(true));
 // Register the Composer autoloader...
 require __DIR__.'/vendor/autoload.php';
 
+if (($argv[1] ?? null) === 'serve') {
+	ensureAiServiceRunning(__DIR__);
+}
+
+function ensureAiServiceRunning(string $projectRoot): void
+{
+	$host = getenv('AI_SERVICE_HOST') ?: '127.0.0.1';
+	$port = (int) (getenv('AI_SERVICE_PORT') ?: 8001);
+
+	$socket = @fsockopen($host, $port, $errorCode, $errorMessage, 0.3);
+	if ($socket !== false) {
+		fclose($socket);
+
+		return;
+	}
+
+	$aiRoot = $projectRoot.DIRECTORY_SEPARATOR.'ai-service';
+	if (! is_dir($aiRoot)) {
+		return;
+	}
+
+	$pythonCandidates = [
+		$projectRoot.DIRECTORY_SEPARATOR.'.venv'.DIRECTORY_SEPARATOR.'Scripts'.DIRECTORY_SEPARATOR.'python.exe',
+		$aiRoot.DIRECTORY_SEPARATOR.'.venv'.DIRECTORY_SEPARATOR.'Scripts'.DIRECTORY_SEPARATOR.'python.exe',
+		'python',
+	];
+
+	$python = 'python';
+	foreach ($pythonCandidates as $candidate) {
+		if ($candidate === 'python' || is_file($candidate)) {
+			$python = $candidate;
+			break;
+		}
+	}
+
+	if (PHP_OS_FAMILY === 'Windows') {
+		$command = sprintf(
+			'cmd /c start "" /B "%s" -m uvicorn api.main:app --host %s --port %d --app-dir "%s"',
+			$python,
+			$host,
+			$port,
+			$aiRoot,
+		);
+
+		@pclose(@popen($command, 'r'));
+
+		return;
+	}
+
+	$command = sprintf(
+		'%s -m uvicorn api.main:app --host %s --port %d --app-dir %s > /dev/null 2>&1 &',
+		escapeshellarg($python),
+		escapeshellarg($host),
+		$port,
+		escapeshellarg($aiRoot),
+	);
+
+	@pclose(@popen($command, 'r'));
+}
+
 // Bootstrap Laravel and handle the command...
 /** @var Application $app */
 $app = require_once __DIR__.'/bootstrap/app.php';

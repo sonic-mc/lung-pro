@@ -1,3 +1,86 @@
+## Deep Learning–Based Lung Cancer Detection Platform
+
+Hybrid scaffold that integrates:
+- Laravel web application for patient workflows and prediction dashboard
+- Python FastAPI AI service for segmentation + classification inference
+
+### Architecture
+
+- Laravel responsibilities:
+	- User roles scaffold (`admin`, `radiologist`, `researcher`)
+	- Patient records, scan uploads, prediction persistence
+	- Dashboard and report views
+	- REST communication to Python `/predict`
+- Python responsibilities:
+	- Image preprocessing and augmentation
+	- U-Net segmentation + CNN classification hybrid model
+	- Grad-CAM-like heatmap generation
+	- FastAPI endpoint serving predictions
+
+### Laravel Flow
+
+1. Upload image from `/scans/upload`
+2. Store image in `storage/app/images` via `medical_images` disk
+3. Send image multipart request to Python AI service
+4. Receive prediction payload
+5. Save prediction in database and show dashboard/report
+
+### Core Database Tables
+
+- `users` (with `role`)
+- `patients`
+- `scans`
+- `predictions`
+
+### Python API Contract
+
+`POST /predict`
+
+Example response:
+
+```json
+{
+	"prediction": "Benign",
+	"probability": 0.92,
+	"heatmap": "gradcam_image.png"
+}
+```
+
+### Run (Laravel)
+
+```bash
+composer install
+cp .env.example .env
+php artisan key:generate
+php artisan migrate
+php artisan serve
+```
+
+Set AI service URL in `.env`:
+
+```dotenv
+AI_SERVICE_BASE_URL=http://127.0.0.1:8001
+AI_SERVICE_TIMEOUT=60
+```
+
+### Run (Python AI Service)
+
+```bash
+cd ai-service
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn api.main:app --host 0.0.0.0 --port 8001 --reload
+```
+
+### Scaffold Notes
+
+- `training/train.py` and `training/evaluate.py` are starter pipelines for experimentation.
+- `inference/predict.py` supports checkpoint loading from `ai-service/artifacts/checkpoints/hybrid_model.pt`.
+- This scaffold is structured for academic research evolution and production hardening.
+
+---
+
 <p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
 
 <p align="center">
