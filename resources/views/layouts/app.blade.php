@@ -40,9 +40,34 @@
             <div class="d-flex align-items-center gap-2 gap-lg-3 app-top-actions">
                 <span class="badge rounded-pill text-bg-light border text-secondary px-3 py-2 d-none d-lg-inline">Production</span>
                 @auth
-                    <span class="text-muted small d-none d-md-inline">{{ auth()->user()->name }}</span>
+                    <a href="{{ route('scans.create') }}" class="btn btn-primary btn-sm px-3">New Upload</a>
+                    <div class="dropdown">
+                        <button class="btn btn-outline-secondary btn-sm rounded-circle d-inline-flex align-items-center justify-content-center profile-menu-btn"
+                                type="button"
+                                id="profileDropdown"
+                                data-bs-toggle="dropdown"
+                                aria-expanded="false"
+                                aria-label="Open profile menu">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                                <path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm-5 6a5 5 0 1 1 10 0H3Z"/>
+                            </svg>
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="profileDropdown">
+                            <li><h6 class="dropdown-header">{{ auth()->user()->name }}</h6></li>
+                            <li><a class="dropdown-item" href="{{ route('profile.edit') }}">Profile</a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li>
+                                <form method="POST" action="{{ route('logout') }}">
+                                    @csrf
+                                    <button type="submit" class="dropdown-item">Logout</button>
+                                </form>
+                            </li>
+                        </ul>
+                    </div>
+                @else
+                    <a href="{{ route('login') }}" class="btn btn-outline-primary btn-sm px-3">Login</a>
+                    <a href="{{ route('register') }}" class="btn btn-primary btn-sm px-3">Register</a>
                 @endauth
-                <a href="{{ route('scans.create') }}" class="btn btn-primary btn-sm px-3">New Upload</a>
             </div>
         </div>
     </div>
@@ -148,6 +173,12 @@
 
     .app-top-actions .btn {
         font-weight: 600;
+    }
+
+    .profile-menu-btn {
+        width: 34px;
+        height: 34px;
+        padding: 0;
     }
 
     .app-sidebar-shell {
