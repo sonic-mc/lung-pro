@@ -89,6 +89,14 @@
                         </select>
                     </div>
                     <div class="col-md-4">
+                        <label class="form-label" for="operating_mode">Operating Mode</label>
+                        <select id="operating_mode" name="operating_mode" class="form-select" required>
+                            <option value="diagnostic" @selected(old('operating_mode', 'diagnostic') === 'diagnostic')>Diagnostic Support (Balanced)</option>
+                            <option value="screening" @selected(old('operating_mode') === 'screening')>Screening (High Sensitivity)</option>
+                        </select>
+                        <div class="form-text">Screening mode uses a lower malignancy threshold to reduce missed positives.</div>
+                    </div>
+                    <div class="col-md-4">
                         <div class="d-flex justify-content-between align-items-center mb-1">
                             <label class="form-label mb-0" for="selected_model">Primary AI Model</label>
                             <div class="d-flex gap-1">

@@ -39,6 +39,7 @@ async def predict(
     modality: Annotated[str, Form()] = 'xray',
     dataset_source: Annotated[str, Form()] = '',
     selected_model: Annotated[str, Form()] = 'hybrid',
+    operating_mode: Annotated[str, Form()] = 'diagnostic',
 ) -> JSONResponse:
     suffix = Path(file.filename or "scan.png").suffix or ".png"
     temp_path = None
@@ -54,20 +55,28 @@ async def predict(
             modality=modality,
             dataset_source=dataset_source,
             selected_model=selected_model,
+            operating_mode=operating_mode,
         )
         return JSONResponse(content={
             "prediction": result["prediction"],
             "probability": result["probability"],
+            "malignancy_probability": result["malignancy_probability"],
+            "operating_mode": result["operating_mode"],
+            "malignancy_threshold": result["malignancy_threshold"],
             "model_comparisons": result["model_comparisons"],
             "model_visuals": result["model_visuals"],
             "model_version": result["model_version"],
             "heatmap": result["heatmap"],
             "explanation_maps": result["explanation_maps"],
             "region_confidence_score": result["region_confidence_score"],
+            "top_suspicious_regions": result["top_suspicious_regions"],
+            "lesion_quantification": result["lesion_quantification"],
             "cancer_stage": result["cancer_stage"],
             "confidence_reasoning": result["confidence_reasoning"],
             "ct_viewer": result["ct_viewer"],
             "dataset_source": result["dataset_source"],
+            "quality_gate": result["quality_gate"],
+            "preprocessing_metadata": result["preprocessing_metadata"],
             "finding_location": result["finding_location"],
             "severity_score": result["severity_score"],
             "confidence_band": result["confidence_band"],
@@ -76,6 +85,7 @@ async def predict(
             "tumor_area_mm2": result["tumor_area_mm2"],
             "tumor_volume_mm3": result["tumor_volume_mm3"],
             "nodule_burden_percent": result["nodule_burden_percent"],
+            "temperature_scaling": result["temperature_scaling"],
         })
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

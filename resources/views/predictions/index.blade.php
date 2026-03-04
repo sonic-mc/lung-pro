@@ -359,6 +359,7 @@
                         <th>Patient</th>
                         <th>MRN</th>
                         <th>Modality</th>
+                        <th>Mode</th>
                         <th>Model</th>
                         <th>Prediction</th>
                         <th>Probability</th>
@@ -371,6 +372,13 @@
                             <td>{{ $prediction->scan->patient->full_name ?? '-' }}</td>
                             <td>{{ $prediction->scan->patient->medical_record_number ?? '-' }}</td>
                             <td>{{ strtoupper($prediction->scan->modality ?? '-') }}</td>
+                            <td>
+                                @php
+                                    $operatingMode = (string) data_get($prediction->raw_response, 'operating_mode', 'diagnostic');
+                                    $operatingModeBadge = $operatingMode === 'screening' ? 'text-bg-warning' : 'text-bg-primary';
+                                @endphp
+                                <span class="badge {{ $operatingModeBadge }}">{{ ucfirst($operatingMode) }}</span>
+                            </td>
                             <td>{{ $prediction->model_version ?? 'N/A' }}</td>
                             <td>
                                 <span class="badge {{ $prediction->predicted_label === 'Malignant' ? 'text-bg-danger' : 'text-bg-success' }}">
@@ -385,7 +393,7 @@
                         </tr>
                     @empty
                         <tr>
-                            <td colspan="7" class="text-center py-4">No predictions available yet.</td>
+                            <td colspan="8" class="text-center py-4">No predictions available yet.</td>
                         </tr>
                     @endforelse
                 </tbody>

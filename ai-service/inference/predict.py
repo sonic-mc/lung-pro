@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import importlib
+import json
 import os
 from pathlib import Path
 import sys
@@ -17,8 +18,19 @@ from models.densenet import build_densenet_classifier
 from models.hybrid_model import HybridLungCancerModel
 from models.resnet import build_resnet_classifier
 from preprocessing.loader import preprocess_for_model
-from preprocessing.scan_validation import validate_scan_input
-from utils.config import CHECKPOINT_DIR, CLASS_NAMES, HEATMAP_DIR, IMAGE_SIZE, MODEL_VERSION
+from preprocessing.scan_validation import assess_scan_quality, validate_scan_input
+from utils.config import (
+    CHECKPOINT_DIR,
+    CALIBRATION_FILE,
+    CLASS_NAMES,
+    HEATMAP_DIR,
+    IMAGE_SIZE,
+    MALIGNANCY_THRESHOLD_DIAGNOSTIC,
+    MALIGNANCY_THRESHOLD_SCREENING,
+    MODEL_VERSION,
+    QUALITY_GATE_MIN_SCORE,
+    TEMPERATURE_SCALING,
+)
 from utils.visualization import generate_ct_viewer_assets, generate_explanation_maps, generate_model_comparison_visuals
 
 _hybrid_model: HybridLungCancerModel | None = None
@@ -26,6 +38,7 @@ _resnet_model: torch.nn.Module | None = None
 _densenet_model: torch.nn.Module | None = None
 _yolov8_model = None
 _keras_hf_model = None
+_calibration_profile: dict | None = None
 
 
 def _import_keras_module():
@@ -390,6 +403,81 @@ def _resolve_selected_output(
     return model_outputs.get(selected_model_key, model_outputs['hybrid'])
 
 
+def _temperature_scale_probs(probs: torch.Tensor, temperature: float = TEMPERATURE_SCALING) -> torch.Tensor:
+    temperature = max(float(temperature), 1e-3)
+    safe = torch.clamp(probs, min=1e-6)
+    logits = torch.log(safe)
+    calibrated = torch.softmax(logits / temperature, dim=0)
+    return calibrated
+
+
+def _load_calibration_profile() -> dict:
+    global _calibration_profile
+    if _calibration_profile is not None:
+        return _calibration_profile
+
+    default_profile = {
+        'temperature_scaling': TEMPERATURE_SCALING,
+        'malignancy_threshold_diagnostic': MALIGNANCY_THRESHOLD_DIAGNOSTIC,
+        'malignancy_threshold_screening': MALIGNANCY_THRESHOLD_SCREENING,
+    }
+
+    if not CALIBRATION_FILE.exists():
+        _calibration_profile = default_profile
+        return _calibration_profile
+
+    try:
+        with CALIBRATION_FILE.open('r', encoding='utf-8') as handle:
+            artifact = json.load(handle)
+
+        _calibration_profile = {
+            'temperature_scaling': float(artifact.get('temperature_scaling', TEMPERATURE_SCALING)),
+            'malignancy_threshold_diagnostic': float(artifact.get('malignancy_threshold_diagnostic', MALIGNANCY_THRESHOLD_DIAGNOSTIC)),
+            'malignancy_threshold_screening': float(artifact.get('malignancy_threshold_screening', MALIGNANCY_THRESHOLD_SCREENING)),
+        }
+    except Exception:
+        _calibration_profile = default_profile
+
+    return _calibration_profile
+
+
+def _ensemble_probs(
+    base_probs: dict[str, torch.Tensor],
+    modality: str,
+    optional_probs: dict[str, torch.Tensor],
+) -> torch.Tensor:
+    calibration = _load_calibration_profile()
+    temperature = float(calibration.get('temperature_scaling', TEMPERATURE_SCALING))
+
+    weighted_probs: list[tuple[torch.Tensor, float]] = [
+        (base_probs['hybrid'], 0.45),
+        (base_probs['resnet'], 0.25),
+        (base_probs['densenet'], 0.25),
+    ]
+
+    if modality == 'xray' and 'yolov8' in optional_probs:
+        weighted_probs.append((optional_probs['yolov8'], 0.15))
+
+    total_weight = sum(weight for _, weight in weighted_probs)
+    merged = torch.zeros_like(weighted_probs[0][0])
+    for probs, weight in weighted_probs:
+        merged = merged + (probs * weight)
+
+    if total_weight <= 1e-6:
+        return torch.tensor([0.5, 0.5], dtype=torch.float32)
+
+    merged = merged / total_weight
+    return _temperature_scale_probs(merged, temperature=temperature)
+
+
+def _operating_threshold(operating_mode: str) -> float:
+    calibration = _load_calibration_profile()
+
+    if operating_mode == 'screening':
+        return float(calibration.get('malignancy_threshold_screening', MALIGNANCY_THRESHOLD_SCREENING))
+    return float(calibration.get('malignancy_threshold_diagnostic', MALIGNANCY_THRESHOLD_DIAGNOSTIC))
+
+
 def _build_saliency_maps(
     resnet_model: torch.nn.Module,
     densenet_model: torch.nn.Module,
@@ -462,14 +550,25 @@ def infer_image(
     modality: str = 'xray',
     dataset_source: str = '',
     selected_model: str = 'hybrid',
+    operating_mode: str = 'diagnostic',
 ) -> dict:
     validate_scan_input(image_path, modality)
+
+    normalized_mode = (operating_mode or 'diagnostic').strip().lower()
+    if normalized_mode not in {'diagnostic', 'screening'}:
+        normalized_mode = 'diagnostic'
+
+    quality_gate = assess_scan_quality(image_path, modality)
+    if not quality_gate['reliable']:
+        reasons = quality_gate.get('reasons') or ['Quality gate failed.']
+        joined = '; '.join(str(reason) for reason in reasons)
+        raise ValueError(f'Cannot reliably evaluate this scan (quality score {quality_gate.get("score", 0.0):.2f} < {QUALITY_GATE_MIN_SCORE:.2f}). {joined}')
 
     hybrid_model = _get_hybrid_model()
     resnet_model = _get_resnet_model()
     densenet_model = _get_densenet_model()
 
-    tensor, resized_rgb = preprocess_for_model(image_path, image_size=IMAGE_SIZE)
+    tensor, resized_rgb, preprocessing_metadata = preprocess_for_model(image_path, image_size=IMAGE_SIZE)
 
     with torch.no_grad():
         output = hybrid_model(tensor)
@@ -486,6 +585,17 @@ def infer_image(
         _prediction_from_probs('Hybrid', hybrid_probs),
     ]
 
+    ensemble_probs_preview = _ensemble_probs(
+        base_probs={
+            'resnet': resnet_probs,
+            'densenet': densenet_probs,
+            'hybrid': hybrid_probs,
+        },
+        modality=modality,
+        optional_probs=optional_probs,
+    )
+    model_comparisons.append(_prediction_from_probs('Ensemble', ensemble_probs_preview))
+
     if 'yolov8' in optional_probs:
         model_comparisons.append(_prediction_from_probs('YOLOv8', optional_probs['yolov8']))
     if 'kerashf' in optional_probs:
@@ -499,6 +609,9 @@ def infer_image(
         'hybrid': ('Hybrid', hybrid_probs),
     }
 
+    ensemble_probs = ensemble_probs_preview
+    model_outputs['ensemble'] = ('Ensemble', ensemble_probs)
+
     if 'yolov8' in optional_probs:
         model_outputs['yolov8'] = ('YOLOv8', optional_probs['yolov8'])
     if 'kerashf' in optional_probs:
@@ -511,10 +624,11 @@ def infer_image(
         optional_errors,
     )
 
-    pred_idx = int(torch.argmax(selected_probs).item())
-    probability = float(selected_probs[pred_idx].item())
+    malignant_probability = float(selected_probs[1].item()) if selected_probs.numel() > 1 else float(selected_probs.max().item())
+    threshold = _operating_threshold(normalized_mode)
+    pred_idx = 1 if malignant_probability >= threshold else 0
     label = CLASS_NAMES[pred_idx]
-    malignant_probability = float(selected_probs[1].item()) if selected_probs.numel() > 1 else probability
+    probability = malignant_probability if label == 'Malignant' else 1.0 - malignant_probability
 
     finding_location = _estimate_finding_location(output.segmentation_mask)
     severity_score = round(malignant_probability * 100, 2)
@@ -572,22 +686,32 @@ def infer_image(
         'Hybrid': f'Hybrid-{MODEL_VERSION}',
         'ResNet': 'ResNet-v1',
         'DenseNet': 'DenseNet-v1',
+        'Ensemble': 'Ensemble-v1-calibrated',
         'YOLOv8': 'YOLOv8-chest-xray-v1',
         'KerasHF': 'KerasHF-histopath-v1',
     }
 
+    calibration = _load_calibration_profile()
+
     return {
         "prediction": label,
         "probability": round(probability, 4),
+        "malignancy_probability": round(malignant_probability, 4),
+        "operating_mode": normalized_mode,
+        "malignancy_threshold": round(threshold, 4),
         "model_comparisons": model_comparisons,
         "model_visuals": model_visuals,
         "heatmap": xai_bundle["heatmap"],
         "explanation_maps": xai_bundle["explanation_maps"],
         "region_confidence_score": xai_bundle["region_confidence_score"],
+        "top_suspicious_regions": xai_bundle.get("top_suspicious_regions", []),
+        "lesion_quantification": xai_bundle.get("lesion_quantification", {}),
         "cancer_stage": cancer_stage,
         "confidence_reasoning": confidence_reasoning,
         "ct_viewer": ct_viewer,
         "dataset_source": dataset_source,
+        "quality_gate": quality_gate,
+        "preprocessing_metadata": preprocessing_metadata,
         "finding_location": finding_location,
         "severity_score": severity_score,
         "confidence_band": confidence_band,
@@ -597,4 +721,5 @@ def infer_image(
         "tumor_volume_mm3": growth_metrics['tumor_volume_mm3'],
         "nodule_burden_percent": growth_metrics['nodule_burden_percent'],
         "model_version": model_versions.get(selected_model_name, f"{selected_model_name}-{MODEL_VERSION}"),
+        "temperature_scaling": float(calibration.get('temperature_scaling', TEMPERATURE_SCALING)),
     }

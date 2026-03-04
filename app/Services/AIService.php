@@ -32,7 +32,8 @@ class AIService
         string $absoluteImagePath,
         string $modality = 'xray',
         string $datasetSource = '',
-        string $selectedModel = 'hybrid'
+        string $selectedModel = 'hybrid',
+        string $operatingMode = 'diagnostic'
     ): array
     {
         if (! is_file($absoluteImagePath)) {
@@ -47,6 +48,7 @@ class AIService
                     'modality' => $modality,
                     'dataset_source' => $datasetSource,
                     'selected_model' => $selectedModel,
+                    'operating_mode' => $operatingMode,
                 ]);
         } catch (ConnectionException $exception) {
             throw new AIServiceException('AI service is unavailable. Please ensure FastAPI is running on '.config('services.ai_service.base_url').'.', previous: $exception);
@@ -56,27 +58,59 @@ class AIService
 
         $payload = $response->json();
 
+        return $this->mapPredictionPayload($payload, $selectedModel, $datasetSource, $operatingMode);
+    }
+
+    private function floatOrNull(mixed $value): ?float
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return (float) $value;
+    }
+
+    private function arrayOrNull(mixed $value): ?array
+    {
+        return is_array($value) ? $value : null;
+    }
+
+    private function arrayOrEmpty(mixed $value): array
+    {
+        return is_array($value) ? $value : [];
+    }
+
+    private function mapPredictionPayload(array $payload, string $selectedModel, string $datasetSource, string $operatingMode): array
+    {
         return [
             'prediction' => $payload['prediction'] ?? 'Unknown',
             'probability' => (float) ($payload['probability'] ?? 0),
-            'model_comparisons' => is_array($payload['model_comparisons'] ?? null) ? $payload['model_comparisons'] : [],
-            'model_visuals' => is_array($payload['model_visuals'] ?? null) ? $payload['model_visuals'] : null,
+            'malignancy_probability' => $this->floatOrNull($payload['malignancy_probability'] ?? null),
+            'operating_mode' => $payload['operating_mode'] ?? $operatingMode,
+            'malignancy_threshold' => $this->floatOrNull($payload['malignancy_threshold'] ?? null),
+            'model_comparisons' => $this->arrayOrEmpty($payload['model_comparisons'] ?? null),
+            'model_visuals' => $this->arrayOrNull($payload['model_visuals'] ?? null),
             'model_version' => $payload['model_version'] ?? strtoupper($selectedModel),
             'heatmap' => $payload['heatmap'] ?? null,
             'cancer_stage' => $payload['cancer_stage'] ?? null,
             'confidence_reasoning' => $payload['confidence_reasoning'] ?? null,
-            'ct_viewer' => is_array($payload['ct_viewer'] ?? null) ? $payload['ct_viewer'] : null,
+            'ct_viewer' => $this->arrayOrNull($payload['ct_viewer'] ?? null),
             'dataset_source' => $payload['dataset_source'] ?? $datasetSource,
             'finding_location' => $payload['finding_location'] ?? null,
-            'severity_score' => isset($payload['severity_score']) ? (float) $payload['severity_score'] : null,
+            'severity_score' => $this->floatOrNull($payload['severity_score'] ?? null),
             'confidence_band' => $payload['confidence_band'] ?? null,
-            'region_confidence_score' => isset($payload['region_confidence_score']) ? (float) $payload['region_confidence_score'] : null,
-            'explanation_maps' => is_array($payload['explanation_maps'] ?? null) ? $payload['explanation_maps'] : null,
-            'nodule_diameter_mm' => isset($payload['nodule_diameter_mm']) ? (float) $payload['nodule_diameter_mm'] : null,
-            'nodule_area_px' => isset($payload['nodule_area_px']) ? (float) $payload['nodule_area_px'] : null,
-            'tumor_area_mm2' => isset($payload['tumor_area_mm2']) ? (float) $payload['tumor_area_mm2'] : null,
-            'tumor_volume_mm3' => isset($payload['tumor_volume_mm3']) ? (float) $payload['tumor_volume_mm3'] : null,
-            'nodule_burden_percent' => isset($payload['nodule_burden_percent']) ? (float) $payload['nodule_burden_percent'] : null,
+            'region_confidence_score' => $this->floatOrNull($payload['region_confidence_score'] ?? null),
+            'top_suspicious_regions' => $this->arrayOrEmpty($payload['top_suspicious_regions'] ?? null),
+            'lesion_quantification' => $this->arrayOrNull($payload['lesion_quantification'] ?? null),
+            'quality_gate' => $this->arrayOrNull($payload['quality_gate'] ?? null),
+            'preprocessing_metadata' => $this->arrayOrNull($payload['preprocessing_metadata'] ?? null),
+            'explanation_maps' => $this->arrayOrNull($payload['explanation_maps'] ?? null),
+            'nodule_diameter_mm' => $this->floatOrNull($payload['nodule_diameter_mm'] ?? null),
+            'nodule_area_px' => $this->floatOrNull($payload['nodule_area_px'] ?? null),
+            'tumor_area_mm2' => $this->floatOrNull($payload['tumor_area_mm2'] ?? null),
+            'tumor_volume_mm3' => $this->floatOrNull($payload['tumor_volume_mm3'] ?? null),
+            'nodule_burden_percent' => $this->floatOrNull($payload['nodule_burden_percent'] ?? null),
+            'temperature_scaling' => $this->floatOrNull($payload['temperature_scaling'] ?? null),
             'raw' => $payload,
         ];
     }

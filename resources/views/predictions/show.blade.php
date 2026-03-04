@@ -116,6 +116,184 @@
                 }
             @endphp
 
+            @if ($baseImageUrl && $defaultMapUrl)
+                @php
+                    $isCtWorkflow = ($prediction->scan->modality ?? null) === 'ct' && count($ctSliceUrls) > 0 && count($ctSegUrls) > 0;
+                    $clinicalBaseUrl = $isCtWorkflow ? $ctSliceUrls[0] : $baseImageUrl;
+                    $clinicalHeatmapUrl = $isCtWorkflow ? $ctSegUrls[0] : $defaultMapUrl;
+                    $clinicalMaskUrl = $isCtWorkflow ? null : ($mapUrls['boundary'] ?? null);
+                    $scanDate = optional($prediction->scan->created_at)->format('Y-m-d') ?? optional($prediction->evaluated_at)->format('Y-m-d');
+                    $suspiciousRegions = data_get($prediction->raw_response, 'top_suspicious_regions', []);
+                    $primarySuspicious = is_array($suspiciousRegions) && count($suspiciousRegions) > 0 ? $suspiciousRegions[0] : null;
+                    $secondarySuspicious = is_array($suspiciousRegions) && count($suspiciousRegions) > 1 ? $suspiciousRegions[1] : null;
+                    $topContribution = is_array($primarySuspicious) ? data_get($primarySuspicious, 'confidence_score') : null;
+                    $secondaryContribution = is_array($secondarySuspicious) ? data_get($secondarySuspicious, 'confidence_score') : null;
+                    $qualityGate = data_get($prediction->raw_response, 'quality_gate', []);
+                    $operatingMode = (string) data_get($prediction->raw_response, 'operating_mode', 'diagnostic');
+                    $malignancyThreshold = data_get($prediction->raw_response, 'malignancy_threshold');
+                    $malignancyProbability = data_get($prediction->raw_response, 'malignancy_probability');
+                @endphp
+
+                <div class="border rounded p-2 mb-3 bg-white enterprise-rad" id="clinical-visual-output-stage">
+                    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">
+                        <h2 class="h6 mb-0">Standard Medical AI Diagnostic Workspace</h2>
+                        <div class="d-flex align-items-center gap-2">
+                            <button type="button" id="advanced-xai-toggle" class="btn btn-sm btn-outline-dark" aria-expanded="false">Show Advanced XAI</button>
+                        </div>
+                    </div>
+
+                    <div class="row g-2 mb-2 enterprise-top-row">
+                        <div class="col-lg-5">
+                            <div class="border rounded p-2 h-100 bg-light enterprise-panel">
+                                <div class="small text-muted mb-1">Patient Information Panel</div>
+                                <div class="small mb-1"><strong>Patient:</strong> {{ $prediction->scan->patient->full_name ?? '-' }}</div>
+                                <div class="small mb-1"><strong>MRN:</strong> {{ $prediction->scan->patient->medical_record_number ?? '-' }}</div>
+                                <div class="small mb-1"><strong>Scan Type:</strong> {{ strtoupper((string) ($prediction->scan->modality ?? 'N/A')) }}</div>
+                                <div class="small mb-1"><strong>Operating Mode:</strong> {{ ucfirst($operatingMode) }}</div>
+                                <div class="small mb-1"><strong>Scan Date:</strong> {{ $scanDate ?? 'N/A' }}</div>
+                                <div class="small mb-1"><strong>Quality Score:</strong> {{ number_format((float) data_get($qualityGate, 'score', 0), 2) }}</div>
+                                <div><strong>Model Version:</strong> {{ $prediction->model_version ?? 'N/A' }}</div>
+                            </div>
+                        </div>
+                        <div class="col-lg-7">
+                            <div class="border rounded p-2 h-100 bg-light enterprise-panel">
+                                <div class="small text-muted mb-1">Diagnostic Report Panel</div>
+                                <div class="small fw-semibold mb-1">AI Diagnostic Report Summary</div>
+                                <div class="small mb-1">Prediction: {{ $prediction->predicted_label }} ({{ number_format($prediction->probability * 100, 2) }}%)</div>
+                                <div class="small mb-1">Finding Location: {{ $prediction->finding_location ?? 'N/A' }}</div>
+                                <div class="small mb-1">Severity Score: {{ ! is_null($prediction->severity_score) ? number_format($prediction->severity_score, 2) : 'N/A' }}/100</div>
+                                <div class="small mb-2">Confidence Band: {{ $prediction->confidence_band ?? 'N/A' }}</div>
+                                <div class="d-flex flex-wrap gap-2">
+                                    <a href="{{ route('predictions.report.pdf', $prediction) }}" class="btn btn-sm btn-primary">Export PDF</a>
+                                    <a href="{{ route('predictions.report', $prediction) }}" class="btn btn-sm btn-outline-secondary">Open Full Report</a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row g-2 enterprise-main-row">
+                        <div class="col-lg-8">
+                            <div class="border rounded p-2 h-100 enterprise-panel">
+                                <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-1">
+                                    <div class="small text-muted">Image Viewing Panel (Center)</div>
+                                    <div class="d-flex flex-wrap align-items-center gap-1">
+                                        <button type="button" id="clinical-heatmap-toggle" class="btn btn-sm btn-outline-primary py-0 px-2" aria-pressed="true">Heatmap: ON</button>
+                                        @if ($clinicalMaskUrl)
+                                            <button type="button" id="clinical-mask-toggle" class="btn btn-sm btn-outline-secondary py-0 px-2" aria-pressed="false">Mask: OFF</button>
+                                        @endif
+                                        <button type="button" id="clinical-zoom-out" class="btn btn-sm btn-outline-secondary py-0 px-2">-</button>
+                                        <button type="button" id="clinical-zoom-reset" class="btn btn-sm btn-outline-secondary py-0 px-2">Reset</button>
+                                        <button type="button" id="clinical-zoom-in" class="btn btn-sm btn-outline-secondary py-0 px-2">+</button>
+                                        <span class="small text-muted">Zoom: <span id="clinical-zoom-value">100%</span></span>
+                                    </div>
+                                </div>
+
+                                @if ($isCtWorkflow)
+                                    <div class="row g-2 align-items-end mb-1">
+                                        <div class="col-md-8">
+                                            <label for="clinical-slice-range" class="form-label mb-1 small text-muted">Slice Navigation (CT)</label>
+                                            <input id="clinical-slice-range" type="range" min="0" max="{{ max($ctDepth - 1, 0) }}" value="0" class="form-range">
+                                        </div>
+                                        <div class="col-md-4">
+                                            <div class="small text-muted">Slice: <span id="clinical-slice-value">1</span> / {{ max($ctDepth, 1) }}</div>
+                                        </div>
+                                    </div>
+                                @endif
+
+                                <div id="clinical-viewer-pane" class="border rounded overflow-hidden bg-dark enterprise-viewer-pane" style="position: relative;">
+                                    <div id="clinical-viewer-transform" style="position:absolute; inset:0; transform-origin:center center;">
+                                        <img id="clinical-base-image" src="{{ $clinicalBaseUrl }}" alt="Base Scan" style="width:100%; height:100%; object-fit:contain; position:absolute; inset:0;">
+                                        <img id="clinical-heatmap-image" src="{{ $clinicalHeatmapUrl }}" alt="AI Heatmap Overlay" style="width:100%; height:100%; object-fit:contain; position:absolute; inset:0; opacity:0.62;">
+                                        @if ($clinicalMaskUrl)
+                                            <img id="clinical-mask-image" src="{{ $clinicalMaskUrl }}" alt="Segmentation Boundary Overlay" style="width:100%; height:100%; object-fit:contain; position:absolute; inset:0; opacity:0;">
+                                        @endif
+                                    </div>
+                                </div>
+
+                                <div class="small text-muted mt-1">
+                                    Red = highly suspicious tissue · Yellow = moderate influence · Blue = normal lung tissue
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="col-lg-4">
+                            <div class="border rounded p-2 h-100 bg-light enterprise-panel enterprise-prediction-panel">
+                                <div class="small text-muted mb-1">AI Prediction Panel (Right Side)</div>
+                                <div class="row g-1 mb-2">
+                                    <div class="col-6">
+                                        <div class="border rounded bg-white p-2 h-100">
+                                            <div class="small text-muted">Prediction</div>
+                                            <div class="small fw-semibold">{{ $prediction->predicted_label }}</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-6">
+                                        <div class="border rounded bg-white p-2 h-100">
+                                            <div class="small text-muted">Probability</div>
+                                            <div class="small fw-semibold">{{ number_format($prediction->probability * 100, 2) }}%</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-6">
+                                        <div class="border rounded bg-white p-2 h-100">
+                                            <div class="small text-muted">Malignancy Prob.</div>
+                                            <div class="small fw-semibold">{{ is_null($malignancyProbability) ? 'N/A' : number_format(((float) $malignancyProbability) * 100, 2).'%' }}</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-6">
+                                        <div class="border rounded bg-white p-2 h-100">
+                                            <div class="small text-muted">Threshold</div>
+                                            <div class="small fw-semibold">{{ is_null($malignancyThreshold) ? 'N/A' : number_format((float) $malignancyThreshold, 2) }}</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-6">
+                                        <div class="border rounded bg-white p-2 h-100">
+                                            <div class="small text-muted">Severity</div>
+                                            <div class="small fw-semibold">{{ ! is_null($prediction->severity_score) ? number_format($prediction->severity_score, 2).'/100' : 'N/A' }}</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-6">
+                                        <div class="border rounded bg-white p-2 h-100">
+                                            <div class="small text-muted">Confidence</div>
+                                            <div class="small fw-semibold">{{ $prediction->confidence_band ?? 'N/A' }}</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="small"><strong>Location:</strong> {{ $prediction->finding_location ?? 'N/A' }}</div>
+                                <div class="small text-muted mt-2"><strong>Workflow:</strong> View image → Validate highlight → Interpret metrics → Confirm/override → Report.</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row g-2 mt-1 enterprise-bottom-row">
+                        <div class="col-lg-8">
+                            <div class="border rounded p-2 bg-light enterprise-panel">
+                                <div class="small text-muted mb-1">Explainability Panel (Below Image)</div>
+                                <div class="small mb-1"><strong>Primary Map:</strong> {{ strtoupper((string) $defaultMapKey) }}</div>
+                                <div class="small mb-1"><strong>Top Suspicious Region Contribution:</strong> {{ ! is_null($topContribution) ? number_format($topContribution, 2).'%' : 'N/A' }}</div>
+                                <div class="small mb-1"><strong>Secondary Region Contribution:</strong> {{ ! is_null($secondaryContribution) ? number_format($secondaryContribution, 2).'%' : 'N/A' }}</div>
+                                @if (is_array($suspiciousRegions) && count($suspiciousRegions) > 0)
+                                    <div class="small mb-1"><strong>Top-3 Suspicious Regions</strong></div>
+                                    @foreach (array_slice($suspiciousRegions, 0, 3) as $index => $region)
+                                        <div class="small text-muted">
+                                            R{{ $index + 1 }} · score {{ number_format((float) data_get($region, 'confidence_score', 0), 2) }}% ·
+                                            centroid ({{ number_format((float) data_get($region, 'centroid_x', 0), 1) }}, {{ number_format((float) data_get($region, 'centroid_y', 0), 1) }}) ·
+                                            diameter {{ number_format((float) data_get($region, 'diameter_mm', 0), 2) }} mm
+                                        </div>
+                                    @endforeach
+                                @endif
+                                <div class="small text-muted">Explainability maps provide visual rationale for AI output and support clinician trust calibration.</div>
+                            </div>
+                        </div>
+                        <div class="col-lg-4">
+                            <div class="border rounded p-2 bg-light h-100 enterprise-panel">
+                                <div class="small text-muted mb-1">Collaboration Principle</div>
+                                <div class="small mb-1"><strong>AI:</strong> Detection support</div>
+                                <div class="small"><strong>Radiologist:</strong> Final decision authority</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            @endif
+
             <dl class="row mb-0">
                 <dt class="col-sm-3">Patient</dt>
                 <dd class="col-sm-9">{{ $prediction->scan->patient->full_name ?? '-' }}</dd>
@@ -217,8 +395,8 @@
                     @endif
                 </dd>
 
-                <dt class="col-sm-3">Model Visual Comparison</dt>
-                <dd class="col-sm-9">
+                <dt class="col-sm-3 advanced-xai-row d-none">Model Visual Comparison</dt>
+                <dd class="col-sm-9 advanced-xai-row d-none">
                     @if (! empty($modelOverlayUrls))
                         @if ($modelComparisonPanelUrl)
                             <div class="mb-3">
@@ -258,8 +436,8 @@
                     @endif
                 </dd>
 
-                <dt class="col-sm-3">Heatmap</dt>
-                <dd class="col-sm-9">
+                <dt class="col-sm-3 advanced-xai-row d-none">Heatmap</dt>
+                <dd class="col-sm-9 advanced-xai-row d-none">
                     @if ($prediction->heatmap_path)
                         @php
                             $heatmapUrl = $aiBaseUrl.'/heatmaps/'.$prediction->heatmap_path;
@@ -273,8 +451,8 @@
                     @endif
                 </dd>
 
-                <dt class="col-sm-3">Multiple XAI Maps</dt>
-                <dd class="col-sm-9">
+                <dt class="col-sm-3 advanced-xai-row d-none">Multiple XAI Maps</dt>
+                <dd class="col-sm-9 advanced-xai-row d-none">
                     @if (! empty($mapUrls) && $baseImageUrl && $defaultMapUrl)
                         <div class="row g-2 align-items-end mb-2">
                             <div class="col-md-4">
@@ -342,8 +520,8 @@
                     @endif
                 </dd>
 
-                <dt class="col-sm-3">3D CT Viewer</dt>
-                <dd class="col-sm-9">
+                <dt class="col-sm-3 advanced-xai-row d-none">3D CT Viewer</dt>
+                <dd class="col-sm-9 advanced-xai-row d-none">
                     @if (($prediction->scan->modality ?? null) === 'ct' && $ctDepth > 0 && count($ctSliceUrls) > 0 && count($ctSegUrls) > 0)
                         <div class="border rounded p-3 bg-white" style="max-width: 980px;">
                             <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
@@ -554,7 +732,193 @@
     </div>
 </div>
 
+<style>
+    #clinical-visual-output-stage.enterprise-rad {
+        --rad-gap: .5rem;
+    }
+
+    #clinical-visual-output-stage .enterprise-panel {
+        border-color: #d5d9dd !important;
+    }
+
+    #clinical-visual-output-stage .enterprise-viewer-pane {
+        height: min(54vh, 460px);
+    }
+
+    @media (min-width: 1200px) {
+        #clinical-visual-output-stage.enterprise-rad {
+            height: calc(100vh - 210px);
+            overflow: hidden;
+        }
+
+        #clinical-visual-output-stage .enterprise-top-row {
+            height: 20%;
+        }
+
+        #clinical-visual-output-stage .enterprise-main-row {
+            height: 57%;
+        }
+
+        #clinical-visual-output-stage .enterprise-bottom-row {
+            height: 23%;
+        }
+
+        #clinical-visual-output-stage .enterprise-prediction-panel,
+        #clinical-visual-output-stage .enterprise-top-row .enterprise-panel,
+        #clinical-visual-output-stage .enterprise-bottom-row .enterprise-panel {
+            overflow-y: auto;
+        }
+
+        #clinical-visual-output-stage .enterprise-viewer-pane {
+            height: calc(100% - 58px);
+            min-height: 280px;
+        }
+    }
+</style>
+
 @push('scripts')
+<script>
+(() => {
+    const advancedToggle = document.getElementById('advanced-xai-toggle');
+    const advancedRows = document.querySelectorAll('.advanced-xai-row');
+
+    if (!advancedToggle || advancedRows.length === 0) {
+        return;
+    }
+
+    let expanded = false;
+
+    const renderAdvancedRows = () => {
+        advancedRows.forEach((row) => {
+            row.classList.toggle('d-none', !expanded);
+        });
+
+        advancedToggle.textContent = expanded ? 'Hide Advanced XAI' : 'Show Advanced XAI';
+        advancedToggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    };
+
+    advancedToggle.addEventListener('click', () => {
+        expanded = !expanded;
+        renderAdvancedRows();
+    });
+
+    renderAdvancedRows();
+})();
+</script>
+
+<script>
+(() => {
+    const clinicalCtSliceUrls = @json($ctSliceUrls);
+    const clinicalCtSegUrls = @json($ctSegUrls);
+
+    const heatmapToggle = document.getElementById('clinical-heatmap-toggle');
+    const maskToggle = document.getElementById('clinical-mask-toggle');
+    const heatmapLayer = document.getElementById('clinical-heatmap-image');
+    const maskLayer = document.getElementById('clinical-mask-image');
+    const baseLayer = document.getElementById('clinical-base-image');
+    const viewerTransform = document.getElementById('clinical-viewer-transform');
+    const zoomInButton = document.getElementById('clinical-zoom-in');
+    const zoomOutButton = document.getElementById('clinical-zoom-out');
+    const zoomResetButton = document.getElementById('clinical-zoom-reset');
+    const zoomValue = document.getElementById('clinical-zoom-value');
+    const ctSliceRange = document.getElementById('clinical-slice-range');
+    const ctSliceValue = document.getElementById('clinical-slice-value');
+
+    if (!heatmapToggle || !heatmapLayer || !baseLayer) {
+        return;
+    }
+
+    let heatmapVisible = true;
+    let maskVisible = false;
+    let scale = 1;
+
+    const applyZoom = () => {
+        if (!viewerTransform) {
+            return;
+        }
+
+        viewerTransform.style.transform = `scale(${scale})`;
+        if (zoomValue) {
+            zoomValue.textContent = `${Math.round(scale * 100)}%`;
+        }
+    };
+
+    const renderHeatmap = () => {
+        heatmapLayer.style.opacity = heatmapVisible ? '0.62' : '0';
+        heatmapToggle.textContent = `Heatmap: ${heatmapVisible ? 'ON' : 'OFF'}`;
+        heatmapToggle.setAttribute('aria-pressed', heatmapVisible ? 'true' : 'false');
+    };
+
+    const renderMask = () => {
+        if (!maskLayer || !maskToggle) {
+            return;
+        }
+
+        maskLayer.style.opacity = maskVisible ? '0.85' : '0';
+        maskToggle.textContent = `Segmentation Mask: ${maskVisible ? 'ON' : 'OFF'}`;
+        maskToggle.setAttribute('aria-pressed', maskVisible ? 'true' : 'false');
+    };
+
+    heatmapToggle.addEventListener('click', () => {
+        heatmapVisible = !heatmapVisible;
+        renderHeatmap();
+    });
+
+    if (maskToggle && maskLayer) {
+        maskToggle.addEventListener('click', () => {
+            maskVisible = !maskVisible;
+            renderMask();
+        });
+        renderMask();
+    }
+
+    if (zoomInButton) {
+        zoomInButton.addEventListener('click', () => {
+            scale = Math.min(4, scale + 0.15);
+            applyZoom();
+        });
+    }
+
+    if (zoomOutButton) {
+        zoomOutButton.addEventListener('click', () => {
+            scale = Math.max(1, scale - 0.15);
+            applyZoom();
+        });
+    }
+
+    if (zoomResetButton) {
+        zoomResetButton.addEventListener('click', () => {
+            scale = 1;
+            applyZoom();
+        });
+    }
+
+    if (ctSliceRange && ctSliceValue && Array.isArray(clinicalCtSliceUrls) && Array.isArray(clinicalCtSegUrls)) {
+        const maxIndex = Math.min(clinicalCtSliceUrls.length, clinicalCtSegUrls.length) - 1;
+
+        const renderCtSlice = () => {
+            const index = Math.max(0, Math.min(maxIndex, Number(ctSliceRange.value)));
+
+            if (clinicalCtSliceUrls[index]) {
+                baseLayer.src = clinicalCtSliceUrls[index];
+            }
+            if (clinicalCtSegUrls[index]) {
+                heatmapLayer.src = clinicalCtSegUrls[index];
+            }
+
+            ctSliceValue.textContent = `${index + 1}`;
+        };
+
+        ctSliceRange.max = String(Math.max(maxIndex, 0));
+        ctSliceRange.addEventListener('input', renderCtSlice);
+        renderCtSlice();
+    }
+
+    renderHeatmap();
+    applyZoom();
+})();
+</script>
+
 <script>
 (() => {
     const image = document.getElementById('annotation-image');

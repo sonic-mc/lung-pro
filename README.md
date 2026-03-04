@@ -25,6 +25,18 @@ Hybrid scaffold that integrates:
 4. Receive prediction payload
 5. Save prediction in database and show dashboard/report
 
+### Clinical Visual Output Stage
+
+The prediction details page presents clinician feedback in a three-panel layout:
+
+- Left: Original scan
+- Center: AI-highlighted scan (heatmap ON/OFF with optional segmentation boundary)
+- Right: Diagnostic results (prediction, probability, severity score, confidence band, finding location)
+
+End-to-end sequence:
+
+Upload Scan → Preprocess → Segment → Classify → Generate Heatmap → Visualize Affected Areas → Severity & Confidence → Report → Radiologist Review
+
 ### Core Database Tables
 
 - `users` (with `role`)

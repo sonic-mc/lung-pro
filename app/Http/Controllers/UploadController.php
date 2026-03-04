@@ -38,6 +38,7 @@ class UploadController extends Controller
             'date_of_birth' => ['nullable', 'date'],
             'sex' => ['nullable', 'in:male,female,other'],
             'modality' => ['required', 'in:xray,ct'],
+            'operating_mode' => ['required', 'in:diagnostic,screening'],
             'selected_model' => ['required', 'in:hybrid,resnet,densenet,yolov8,kerashf'],
             'dataset_source' => ['nullable', 'string', 'max:255'],
             'image' => ['required', 'file', 'mimes:jpg,jpeg,png,dcm,tif,tiff', 'max:10240'],
@@ -80,7 +81,8 @@ class UploadController extends Controller
                 $absoluteImagePath,
                 $validated['modality'],
                 $validated['dataset_source'] ?? '',
-                $validated['selected_model']
+                $validated['selected_model'],
+                $validated['operating_mode']
             );
         } catch (AIServiceException $exception) {
             $scan->update(['status' => 'failed']);

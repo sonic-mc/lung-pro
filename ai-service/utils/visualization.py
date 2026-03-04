@@ -66,6 +66,90 @@ def _draw_boundary(image_bgr: np.ndarray, binary_mask: np.ndarray) -> np.ndarray
     return annotated
 
 
+def _extract_top_suspicious_regions(activation: np.ndarray, threshold: float = 0.55, max_regions: int = 3) -> list[dict]:
+    binary = np.uint8(activation >= threshold)
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary, connectivity=8)
+
+    regions: list[dict] = []
+    for label in range(1, num_labels):
+        area_px = int(stats[label, cv2.CC_STAT_AREA])
+        if area_px < 40:
+            continue
+
+        x = int(stats[label, cv2.CC_STAT_LEFT])
+        y = int(stats[label, cv2.CC_STAT_TOP])
+        w = int(stats[label, cv2.CC_STAT_WIDTH])
+        h = int(stats[label, cv2.CC_STAT_HEIGHT])
+        cx = float(centroids[label][0])
+        cy = float(centroids[label][1])
+
+        mask = labels == label
+        score = float(np.mean(activation[mask]) * 100.0)
+
+        diameter_px = float((4.0 * area_px / np.pi) ** 0.5)
+        pixel_spacing_mm = 0.7
+        diameter_mm = diameter_px * pixel_spacing_mm
+        area_mm2 = float(area_px) * (pixel_spacing_mm ** 2)
+        radius_mm = diameter_mm / 2.0
+        volume_mm3 = (4.0 / 3.0) * np.pi * (radius_mm ** 3) if diameter_mm > 0 else 0.0
+
+        regions.append({
+            'centroid_x': round(cx, 2),
+            'centroid_y': round(cy, 2),
+            'bbox': [x, y, w, h],
+            'confidence_score': round(score, 2),
+            'area_px': round(float(area_px), 2),
+            'diameter_mm': round(float(diameter_mm), 2),
+            'area_mm2': round(float(area_mm2), 2),
+            'volume_mm3': round(float(volume_mm3), 2),
+        })
+
+    regions.sort(key=lambda region: (region['confidence_score'], region['area_px']), reverse=True)
+    return regions[:max_regions]
+
+
+def _annotate_top_regions(image_bgr: np.ndarray, regions: list[dict]) -> np.ndarray:
+    annotated = image_bgr.copy()
+    colors = [(0, 0, 255), (0, 165, 255), (255, 200, 0)]
+
+    for index, region in enumerate(regions):
+        color = colors[min(index, len(colors) - 1)]
+        x, y, w, h = region['bbox']
+        center = (int(round(region['centroid_x'])), int(round(region['centroid_y'])))
+        radius = max(int(round(max(w, h) / 2.0)), 12)
+
+        cv2.circle(annotated, center, radius, color, 2, cv2.LINE_AA)
+        cv2.rectangle(annotated, (x, y), (x + w, y + h), color, 1)
+
+        label = f"R{index + 1}: {region['confidence_score']:.1f}%"
+        text_origin = (max(x, 6), max(y - 8, 18))
+        cv2.putText(annotated, label, text_origin, cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 2, cv2.LINE_AA)
+        cv2.putText(annotated, label, text_origin, cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+
+    return annotated
+
+
+def _derive_lesion_quantification(regions: list[dict]) -> dict:
+    if not regions:
+        return {
+            'lesion_centroid': None,
+            'diameter_mm': 0.0,
+            'area_mm2': 0.0,
+            'volume_mm3': 0.0,
+        }
+
+    primary = regions[0]
+    return {
+        'lesion_centroid': {
+            'x': primary['centroid_x'],
+            'y': primary['centroid_y'],
+        },
+        'diameter_mm': primary['diameter_mm'],
+        'area_mm2': primary['area_mm2'],
+        'volume_mm3': primary['volume_mm3'],
+    }
+
+
 def _save_png(path: Path, image: np.ndarray) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(path), image, [cv2.IMWRITE_PNG_COMPRESSION, 3])
@@ -158,6 +242,8 @@ def generate_explanation_maps(
 
     binary_mask = np.uint8(base_activation > 0.55) * 255
     boundary_map = _draw_boundary(image_bgr, binary_mask)
+    top_regions = _extract_top_suspicious_regions(base_activation, threshold=0.55, max_regions=3)
+    boundary_map = _annotate_top_regions(boundary_map, top_regions)
 
     gradcam_map = _activation_to_overlay(image_bgr, gradcam_activation, alpha=0.42, colormap=cv2.COLORMAP_JET)
     gradcampp_map = _activation_to_overlay(image_bgr, gradcampp_activation, alpha=0.48, colormap=cv2.COLORMAP_HOT)
@@ -195,6 +281,8 @@ def generate_explanation_maps(
         'heatmap': composite_name,
         'explanation_maps': maps,
         'region_confidence_score': region_confidence_score,
+        'top_suspicious_regions': top_regions,
+        'lesion_quantification': _derive_lesion_quantification(top_regions),
     }
 
 

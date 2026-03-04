@@ -4,6 +4,8 @@ import cv2
 import numpy as np
 import pydicom
 
+from utils.config import QUALITY_GATE_MIN_CT_STD, QUALITY_GATE_MIN_SCORE, QUALITY_GATE_MIN_XRAY_CONTRAST
+
 
 CHEST_KEYWORDS = (
     'chest',
@@ -103,3 +105,114 @@ def validate_scan_input(image_path: str | Path, modality: str) -> None:
         return
 
     _validate_non_dicom_xray(path, selected_modality)
+
+
+def _quality_error(reason: str) -> dict:
+    return {
+        'reliable': False,
+        'score': 0.0,
+        'reasons': [reason],
+    }
+
+
+def _quality_from_dicom(path: Path) -> dict:
+    dataset = pydicom.dcmread(str(path), force=True)
+    pixel = dataset.pixel_array.astype(np.float32)
+    slope = float(getattr(dataset, 'RescaleSlope', 1.0))
+    intercept = float(getattr(dataset, 'RescaleIntercept', 0.0))
+    hu = (pixel * slope) + intercept
+
+    hu_std = float(np.std(hu))
+    hu_range = float(np.ptp(hu))
+    shape_score = 1.0 if min(hu.shape[:2]) >= 256 else 0.5
+    contrast_score = min(hu_std / max(QUALITY_GATE_MIN_CT_STD, 1.0), 1.0)
+    range_score = min(hu_range / 800.0, 1.0)
+    score = round(float((0.4 * contrast_score) + (0.35 * range_score) + (0.25 * shape_score)), 4)
+
+    reasons: list[str] = []
+    if hu_std < QUALITY_GATE_MIN_CT_STD:
+        reasons.append('CT contrast variability is low; study may be too noisy/flat for reliable AI interpretation.')
+    if hu_range < 350:
+        reasons.append('CT dynamic range is low; suspected clipping or low-quality acquisition.')
+    if min(hu.shape[:2]) < 256:
+        reasons.append('CT spatial resolution is low for robust lesion localization.')
+
+    return {
+        'score': score,
+        'reasons': reasons,
+        'metrics': {
+            'hu_std': hu_std,
+            'hu_range': hu_range,
+            'height': float(hu.shape[0]),
+            'width': float(hu.shape[1]),
+        },
+    }
+
+
+def _quality_from_xray(path: Path) -> dict:
+    image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    if image is None:
+        return _quality_error('Unable to read uploaded image file.')
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    height, width = gray.shape[:2]
+    contrast = float(np.std(gray))
+    mean_intensity = float(np.mean(gray))
+    edges = cv2.Canny(gray, 50, 150)
+    edge_density = float(np.count_nonzero(edges)) / float(max(edges.size, 1))
+
+    shape_score = 1.0 if min(height, width) >= 256 else 0.6
+    contrast_score = min(contrast / max(QUALITY_GATE_MIN_XRAY_CONTRAST, 1.0), 1.0)
+    edge_score = 1.0 - min(abs(edge_density - 0.07) / 0.07, 1.0)
+    score = round(float((0.4 * contrast_score) + (0.3 * edge_score) + (0.3 * shape_score)), 4)
+
+    reasons: list[str] = []
+    if contrast < QUALITY_GATE_MIN_XRAY_CONTRAST:
+        reasons.append('X-ray contrast appears too low for reliable interpretation.')
+    if edge_density < 0.01 or edge_density > 0.22:
+        reasons.append('X-ray texture pattern is outside expected chest radiography range.')
+    if min(height, width) < 256:
+        reasons.append('X-ray resolution is low for robust AI analysis.')
+
+    return {
+        'score': score,
+        'reasons': reasons,
+        'metrics': {
+            'contrast_std': contrast,
+            'mean_intensity': mean_intensity,
+            'edge_density': edge_density,
+            'height': float(height),
+            'width': float(width),
+        },
+    }
+
+
+def assess_scan_quality(image_path: str | Path, modality: str) -> dict:
+    selected_modality = (modality or 'xray').strip().lower()
+    path = Path(image_path)
+
+    if not path.exists() or not path.is_file():
+        return _quality_error('Uploaded file is missing or inaccessible.')
+
+    if path.suffix.lower() == '.dcm':
+        try:
+            details = _quality_from_dicom(path)
+
+        except Exception as exc:
+            return _quality_error(f'Unable to parse DICOM pixels for quality assessment: {exc}')
+    else:
+        details = _quality_from_xray(path)
+        if details.get('reliable') is False:
+            return details
+
+    score = float(details.get('score', 0.0))
+    reasons = details.get('reasons', [])
+    metrics = details.get('metrics', {})
+
+    return {
+        'reliable': score >= QUALITY_GATE_MIN_SCORE,
+        'score': score,
+        'reasons': reasons,
+        'metrics': metrics,
+        'modality': selected_modality,
+    }
