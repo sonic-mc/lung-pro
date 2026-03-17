@@ -85,6 +85,67 @@ pip install -r requirements.txt
 uvicorn api.main:app --host 0.0.0.0 --port 8001 --reload
 ```
 
+### Deploy Now (Docker Compose)
+
+This repository includes a production deployment stack in `docker-compose.prod.yml` with:
+- `app` (Laravel web)
+- `queue` (Laravel queue worker)
+- `ai-service` (FastAPI inference)
+- `mysql` (MySQL 8.4)
+
+1) Create your env file and set production values:
+
+```bash
+cp .env.example .env
+```
+
+Required edits in `.env` before first start:
+
+```dotenv
+APP_ENV=production
+APP_DEBUG=false
+APP_URL=http://YOUR_SERVER_IP_OR_DOMAIN
+APP_KEY=base64:GENERATE_AND_PASTE_A_REAL_KEY
+
+DB_CONNECTION=mysql
+DB_HOST=mysql
+DB_PORT=3306
+DB_DATABASE=lung
+DB_USERNAME=lung_user
+DB_PASSWORD=change_me
+
+AI_SERVICE_BASE_URL=http://ai-service:8001
+AI_SERVICE_TIMEOUT=60
+```
+
+Generate an app key (copy output into `APP_KEY`):
+
+```bash
+docker compose -f docker-compose.prod.yml run --rm app php artisan key:generate --show
+```
+
+2) Build and start all containers:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+3) Follow startup logs:
+
+```bash
+docker compose -f docker-compose.prod.yml logs -f app ai-service queue
+```
+
+4) Access services:
+- Laravel app: `http://SERVER_IP:8080`
+- AI health: `http://SERVER_IP:8001/health`
+
+5) Stop stack:
+
+```bash
+docker compose -f docker-compose.prod.yml down
+```
+
 ### Scaffold Notes
 
 - `training/train.py` and `training/evaluate.py` are starter pipelines for experimentation.

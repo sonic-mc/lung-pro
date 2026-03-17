@@ -1,0 +1,89 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lung_app
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      ai-service:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      DB_HOST: mysql
+      DB_PORT: 3306
+      AI_SERVICE_BASE_URL: http://ai-service:8001
+    command: >
+      sh -c "test -n \"$APP_KEY\" || (echo 'APP_KEY is missing in .env' && exit 1) &&
+      php artisan migrate --force &&
+      php artisan config:cache &&
+      php artisan route:cache &&
+      php artisan view:cache &&
+      php artisan serve --host=0.0.0.0 --port=8080"
+    ports:
+      - "8080:8080"
+    volumes:
+      - app_storage:/app/storage
+
+  queue:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lung_queue
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      DB_HOST: mysql
+      DB_PORT: 3306
+      AI_SERVICE_BASE_URL: http://ai-service:8001
+    command: sh -c "php artisan queue:work --tries=1 --timeout=120"
+    volumes:
+      - app_storage:/app/storage
+
+  ai-service:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    container_name: lung_ai
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./ai-service/artifacts:/app/artifacts
+
+  mysql:
+    image: mysql:8.4
+    container_name: lung_mysql
+    restart: unless-stopped
+    command: --default-authentication-plugin=mysql_native_password
+    env_file:
+      - .env
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE}
+      MYSQL_USER: ${DB_USERNAME}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p$$MYSQL_ROOT_PASSWORD"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  mysql_data:
+  app_storage:
