@@ -124,6 +124,8 @@ Generate an app key (copy output into `APP_KEY`):
 docker compose -f docker-compose.prod.yml run --rm app php artisan key:generate --show
 ```
 
+If you are reusing an existing MySQL data volume from an older setup, make sure your database user is not still configured with `mysql_native_password`. MySQL 8.4 no longer loads that plugin by default. Use a normal application user such as `lung_user`, or recreate the MySQL volume after updating `.env`.
+
 2) Build and start all containers:
 
 ```bash
